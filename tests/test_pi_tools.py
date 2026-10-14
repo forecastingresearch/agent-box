@@ -34,9 +34,13 @@ FAKE_TOOL_CLI = textwrap.dedent("""\
 VALIDATOR = "def check(value, need):\n    return [f'{k}: missing' for k in need if k not in (value or {})]\n"
 
 
+REFUSAL = object()
+
+
 class ScriptedModel:
     """An OpenAI chat-completions endpoint that plays a script: one tool call per
-    turn, then a closing text. It keeps every request, so a test can read the
+    turn, then a closing text; REFUSAL ends a turn the way a provider's refusal
+    does (pi reads it as an error). It keeps every request, so a test can read the
     tool result pi_tools.ts returned for each call."""
 
     def __init__(self, script):
@@ -65,7 +69,9 @@ class ScriptedModel:
     @staticmethod
     def chunks(turn, n):
         base = {"id": f"c{n}", "object": "chat.completion.chunk", "created": 0, "model": "scripted"}
-        if isinstance(turn, str):
+        if turn is REFUSAL:
+            delta, finish = {"role": "assistant", "content": ""}, "content_filter"
+        elif isinstance(turn, str):
             delta, finish = {"role": "assistant", "content": turn}, "stop"
         else:
             name, args = turn
@@ -261,6 +267,26 @@ class LoopOptionsTest(PiCase):
         self.assertIn("b: missing", model.tool_result(5))
         self.assertIn("fixing: b: missing", model.last_user(5))
         self.assertEqual(res["debrief"], {"result": {"a": "why a", "b": "why b"}, "complete": True,
+                                          "attempts": 2, "problems": [], "error": None})
+
+    def test_debrief_asks_again_after_a_refusal(self):
+        # A refused turn ends pi's run unless something asks again.
+        debrief = {"tool": {"name": "submit_debrief", "description": "d",
+                            "parameters": {"type": "object", "properties": {"a": {"type": "string"}}}},
+                   "prompt": "Debrief now.", "retries": 1}
+        res, model = self.run_pi([
+            ("web_search", {"query": "q1"}),
+            ("web_search", {"query": "q2"}),
+            ("submit_forecast", {"forecasts": [{"k": "a", "probability": 0.1}, {"k": "b", "probability": 0.2}],
+                                 "rationale": "r"}),
+            REFUSAL,
+            ("submit_debrief", {"a": "why a"}),
+            "done",
+        ], debrief=debrief)
+        self.assertEqual(res["rc"], 0, open(os.path.join(res["workdir"], "stderr.txt")).read())
+        self.assertEqual(model.last_user(5), "Now call submit_debrief with the debrief.")
+        self.assertEqual(model.tools(5), {"submit_debrief"})
+        self.assertEqual(res["debrief"], {"result": {"a": "why a"}, "complete": True,
                                           "attempts": 2, "problems": [], "error": None})
 
 

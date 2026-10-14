@@ -260,9 +260,10 @@ export default function (pi: ExtensionAPI) {
         pi.setActiveTools([]);
         return;
       }
-      return { entries: [say(called
-        ? `Call ${debrief.tool.name} again with what is still missing or wrong (entries you already sent are kept), fixing: ${d.problems.join("; ").slice(0, 4000)}`
-        : `Now call ${debrief.tool.name} with the debrief.`)], continue: true };
+      // Not called (prose, or a refusal, which cannot continue from here): the
+      // run is settling, and agent_before_settle asks again.
+      if (!called) return;
+      return { entries: [say(`Call ${debrief.tool.name} again with what is still missing or wrong (entries you already sent are kept), fixing: ${d.problems.join("; ").slice(0, 4000)}`)], continue: true };
     }
     if (phase === "forecast" && maxTurns) {
       if (turns >= limit) { pi.setActiveTools([]); return; }
@@ -274,8 +275,10 @@ export default function (pi: ExtensionAPI) {
     }
   });
 
-  // A reply in prose (no tool call) ends pi's run; under max_turns, nudge instead.
+  // A reply in prose (no tool call, or a provider refusal) ends pi's run; in the
+  // debrief, and under max_turns, nudge instead.
   pi.on("agent_before_settle", async () => {
+    if (phase === "debrief") return { entries: [say(`Now call ${debrief.tool.name} with the debrief.`)], continue: true };
     if (phase !== "forecast" || finalDone || !maxTurns || turns >= limit || forcing) return;
     const missingCover = uncovered();
     return { entries: [say(unlocked()
