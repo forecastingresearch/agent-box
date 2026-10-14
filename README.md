@@ -48,6 +48,19 @@ with the tools it is given, and the answers land in the same folder, which is th
 ```
 
 Every attempt gets a fresh `attempt-N` folder, so a retry never reads an older answer.
+
+The loop has options, all off by default (the ForecastBench driver's loop); AIRO's
+runner turns them on to match its own instrument. `harness.run(..., **options)`:
+
+| option | what it does |
+|---|---|
+| `floor_counts="returned"` | failed research calls count toward the research floor too |
+| `coverage=[keys]` | submission waits for a recent-window `web_search` tagged with each key |
+| `withhold_final=True` | the submit tools are not offered at all until the floor and coverage are met |
+| `warn_missing_keys=False` | the final answer is accepted as sent, with no warning about missing cells |
+| `max_turns=N` | from turn N only `submit_forecast` is offered and asked for, for up to two more turns; a reply in prose gets a nudge |
+| `debrief={...}` | after the answer, one more turn for a structured debrief, validated, with retries, saved to `debrief.json` |
+| `tool_parameters={...}` | replace a tool's parameter schema, e.g. to require a `cause` on `web_search` |
 pi runs isolated: no built-in tools, no discovered extensions or skills, no
 AGENTS.md/CLAUDE.md, so the inbox is the whole prompt.
 

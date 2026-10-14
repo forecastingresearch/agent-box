@@ -43,16 +43,28 @@ def key_of(cell, key_fields):
     return "|".join(str(cell.get(k)) for k in key_fields)
 
 
+# The loop's optional settings (pi_tools.ts's header says what each does).
+# Unset, a call runs the default loop: the ForecastBench driver's.
+LOOP_OPTIONS = ("floor_counts", "coverage", "withhold_final", "warn_missing_keys", "max_turns", "debrief")
+
+
 def write_spec(workdir, *, cell_schema, key_fields, allowed_keys, tool_descriptions,
-               min_research=0, research_tools=RESEARCH_TOOLS, final_extra=None, cells_tool=True):
+               min_research=0, research_tools=RESEARCH_TOOLS, final_extra=None, cells_tool=True,
+               tool_parameters=None, **loop):
     """spec.json for pi_tools.ts. tool_descriptions: {tool name: description}
     for every tool offered (research tools, submit_forecast, and submit_cells
-    unless cells_tool is False)."""
-    tools = {name: {"description": tool_descriptions[name]}
+    unless cells_tool is False); tool_parameters: {tool name: JSON schema} to
+    replace a tool's built-in parameters; `loop`: LOOP_OPTIONS."""
+    unknown = set(loop) - set(LOOP_OPTIONS)
+    if unknown:
+        raise TypeError(f"unknown loop options {sorted(unknown)}; have {LOOP_OPTIONS}")
+    tools = {name: {"description": tool_descriptions[name],
+                    **({"parameters": tool_parameters[name]} if name in (tool_parameters or {}) else {})}
              for name in list(research_tools) + (["submit_cells"] if cells_tool else []) + ["submit_forecast"]}
     spec = {"tool_cli": TOOL_CLI, "research_tools": list(research_tools), "min_research": min_research,
             "tools": tools, "cell_schema": cell_schema, "key_fields": list(key_fields),
-            "allowed_keys": list(allowed_keys), "final_extra": final_extra or {}}
+            "allowed_keys": list(allowed_keys), "final_extra": final_extra or {},
+            **{k: v for k, v in loop.items() if v is not None}}
     os.makedirs(workdir, exist_ok=True)
     with open(os.path.join(workdir, "spec.json"), "w") as f:
         json.dump(spec, f, indent=1)
@@ -153,14 +165,15 @@ def collect(workdir, key_fields, allowed_keys):
 
 def run(*, model, system, prompt, workdir, cell_schema, key_fields, allowed_keys, tool_descriptions,
         min_research=0, research_tools=RESEARCH_TOOLS, final_extra=None, cells_tool=True,
-        thinking="high", pi=DEFAULT_PI, cwd=None, env=None, timeout=None):
+        thinking="high", pi=DEFAULT_PI, cwd=None, env=None, timeout=None, tool_parameters=None, **loop):
     """One pi call, in a fresh workdir/attempt-N (returned as "workdir").
     Writes spec.json, prompt.txt, system.txt, events.jsonl, stderr.txt there
-    (and pi_tools.ts writes pieces.jsonl, final.json)."""
+    (and pi_tools.ts writes pieces.jsonl, final.json, debrief.json)."""
     workdir = new_attempt_dir(workdir)
     write_spec(workdir, cell_schema=cell_schema, key_fields=key_fields, allowed_keys=allowed_keys,
                tool_descriptions=tool_descriptions, min_research=min_research,
-               research_tools=research_tools, final_extra=final_extra, cells_tool=cells_tool)
+               research_tools=research_tools, final_extra=final_extra, cells_tool=cells_tool,
+               tool_parameters=tool_parameters, **loop)
     open(os.path.join(workdir, "prompt.txt"), "w").write(prompt)
     open(os.path.join(workdir, "system.txt"), "w").write(system)
     cmd = pi_command(model, system, prompt, thinking=thinking, pi=pi)
@@ -177,5 +190,12 @@ def run(*, model, system, prompt, workdir, cell_schema, key_fields, allowed_keys
     usage["harness"] = "pi"
     usage["seconds"] = round(secs)
     cells, answer, delivery = collect(workdir, key_fields, allowed_keys)
+    final = read_json(os.path.join(workdir, "final.json")) or {}
     return {"rc": rc, "seconds": secs, "evidence": evidence, "usage": usage, "cells": cells,
-            "answer": answer, "delivery": delivery, "trace": events_path, "workdir": workdir}
+            "answer": answer, "delivery": delivery, "forced": bool(final.get("forced")),
+            "debrief": read_json(os.path.join(workdir, "debrief.json")),
+            "trace": events_path, "workdir": workdir}
+
+
+def read_json(path):
+    return json.load(open(path)) if os.path.exists(path) else None

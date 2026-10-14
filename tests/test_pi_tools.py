@@ -18,13 +18,20 @@ SCHEMA = {"type": "object", "required": ["k", "probability"],
           "properties": {"k": {"type": "string"}, "probability": {"type": "number"}}}
 DESC = {"web_search": "s", "read_page": "r", "submit_cells": "c", "submit_forecast": "f"}
 
-# Research without the network: web_search answers, read_page fails.
+# Research without the network: web_search answers, read_page fails. A
+# debrief validator runs as the real tool_cli runs it.
 FAKE_TOOL_CLI = textwrap.dedent("""\
     import json, sys
+    sys.path.insert(0, {repo!r})
     tool = sys.argv[1]
-    print(json.dumps({"results": [{"url": "u", "title": "t"}]} if tool == "web_search"
-                     else {"error": "page read failed: 404"}))
-    """)
+    if tool == "validate":
+        from fri_forecaster.tool_cli import validate
+        print(json.dumps(validate(**json.load(sys.stdin))))
+    else:
+        print(json.dumps({{"results": [{{"url": "u", "title": "t"}}]}} if tool == "web_search"
+                         else {{"error": "page read failed: 404"}}))
+    """).format(repo=os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+VALIDATOR = "def check(value, need):\n    return [f'{k}: missing' for k in need if k not in (value or {})]\n"
 
 
 class ScriptedModel:
@@ -69,6 +76,16 @@ class ScriptedModel:
         yield dict(base, choices=[{"index": 0, "delta": {}, "finish_reason": finish}])
         yield dict(base, choices=[], usage={"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15})
 
+    def tools(self, n):
+        """The tools declared in request n (1-based)."""
+        return {t["function"]["name"] for t in self.requests[n - 1].get("tools") or []}
+
+    def last_user(self, n):
+        """The text of the last user message in request n (1-based)."""
+        msg = [m for m in self.requests[n - 1]["messages"] if m.get("role") == "user"][-1]
+        content = msg["content"]
+        return content if isinstance(content, str) else "".join(p.get("text", "") for p in content)
+
     def tool_result(self, n):
         """The tool result the model saw at the start of request n (1-based):
         the answer to the call it made in turn n-1."""
@@ -81,8 +98,14 @@ class ScriptedModel:
 
 
 # Skipped without node and pi, except in CI, where a skip would hide a broken install.
-@unittest.skipUnless((harness.DEFAULT_PI and shutil.which("node")) or os.environ.get("CI"), "needs node and pi (npm ci)")
-class PiToolsTest(unittest.TestCase):
+NEEDS_PI = unittest.skipUnless((harness.DEFAULT_PI and shutil.which("node")) or os.environ.get("CI"),
+                               "needs node and pi (npm ci)")
+
+
+class PiCase(unittest.TestCase):
+    """A temp dir, the fake research tools, and run_pi: one harness.run
+    through the real pi against a ScriptedModel."""
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         d = self.tmp.name
@@ -108,6 +131,11 @@ class PiToolsTest(unittest.TestCase):
                     env={"PI_CODING_AGENT_DIR": agent, "PI_OFFLINE": "1", "PI_TELEMETRY": "0"})
         args.update(kw)
         return harness.run(**args), model
+
+
+@NEEDS_PI
+class PiToolsTest(PiCase):
+    """The default loop: the ForecastBench driver's."""
 
     def test_research_floor_pieces_and_final(self):
         res, model = self.run_pi([
@@ -156,6 +184,84 @@ class PiToolsTest(unittest.TestCase):
         offered = {t["function"]["name"] for t in model.requests[0]["tools"]}
         self.assertEqual(offered, {"submit_forecast"})      # no research tools, and none of pi's built-ins
         self.assertEqual({k: c["probability"] for k, c in res["cells"].items()}, {"a": 0.4, "b": 0.6})
+
+
+SEARCH_WITH_CAUSE = {"type": "object", "required": ["query", "cause"],
+                     "properties": {"query": {"type": "string"}, "recent_days": {"type": "integer"},
+                                    "cause": {"type": "string", "enum": ["ai", "bio"]}}}
+
+
+@NEEDS_PI
+class LoopOptionsTest(PiCase):
+    """The loop options AIRO's runner sets (pi_tools.ts header)."""
+
+    def test_withheld_until_every_call_and_group_counts(self):
+        res, model = self.run_pi([
+            ("read_page", {"url": "u"}),                                          # fails, still counts
+            ("web_search", {"query": "q", "cause": "ai", "recent_days": 7}),
+            ("web_search", {"query": "q", "cause": "bio"}),                       # no recent_days: not coverage
+            ("web_search", {"query": "q", "cause": "bio", "recent_days": 30}),
+            ("submit_forecast", {"forecasts": [{"k": "a", "probability": 0.1}], "rationale": "r"}),
+            "done",
+        ], min_research=4, floor_counts="returned", coverage=["ai", "bio"], withhold_final=True,
+            warn_missing_keys=False, tool_parameters={"web_search": SEARCH_WITH_CAUSE})
+        self.assertEqual(res["rc"], 0, open(os.path.join(res["workdir"], "stderr.txt")).read())
+        for n in (1, 2, 3, 4):            # 4 returned (one failed) and both groups covered after call 4
+            self.assertNotIn("submit_forecast", model.tools(n))
+            self.assertNotIn("submit_cells", model.tools(n))
+        self.assertTrue({"submit_forecast", "submit_cells"} <= model.tools(5))
+        sent = next(t for t in model.requests[0]["tools"] if t["function"]["name"] == "web_search")
+        self.assertEqual(sent["function"]["parameters"]["properties"]["cause"]["enum"], ["ai", "bio"])
+        final = json.load(open(os.path.join(res["workdir"], "final.json")))
+        self.assertEqual((final["research"], final["research_failed"], final["forced"]), (3, 1, False))
+        self.assertEqual({k: c["probability"] for k, c in res["cells"].items()}, {"a": 0.1})  # no warning for b
+
+    def test_turn_limit_offers_only_submission(self):
+        res, model = self.run_pi([
+            ("web_search", {"query": "q1"}),
+            ("web_search", {"query": "q2"}),
+            ("submit_forecast", {"forecasts": [{"k": "a", "probability": 0.2}], "rationale": "forced"}),
+            "done",
+        ], min_research=5, withhold_final=True, warn_missing_keys=False, max_turns=3)
+        self.assertEqual(res["rc"], 0, open(os.path.join(res["workdir"], "stderr.txt")).read())
+        self.assertEqual(model.tools(3), {"submit_forecast"})
+        self.assertTrue(model.last_user(3).startswith("Now call submit_forecast with your final answer."))
+        self.assertTrue(res["forced"])
+
+    def test_turn_limit_ends_a_call_that_never_submits(self):
+        res, model = self.run_pi(["thinking", "still thinking", "no", "no", "no", "no"],
+                                 min_research=1, withhold_final=True, max_turns=3)
+        self.assertEqual(res["rc"], 0, open(os.path.join(res["workdir"], "stderr.txt")).read())
+        self.assertEqual(len(model.requests), 5)          # the limit is max_turns + 2
+        self.assertIn("Keep researching with the tools", model.last_user(2))
+        self.assertEqual(model.tools(5), {"submit_forecast"})
+        self.assertFalse(os.path.exists(os.path.join(res["workdir"], "final.json")))
+
+    def test_debrief_merges_and_retries(self):
+        validator = os.path.join(self.tmp.name, "validator.py")
+        open(validator, "w").write(VALIDATOR)
+        debrief = {"tool": {"name": "submit_debrief", "description": "d",
+                            "parameters": {"type": "object", "properties": {"a": {"type": "string"},
+                                                                            "b": {"type": "string"}}}},
+                   "prompt": "Debrief now.", "retries": 1,
+                   "validator": {"file": validator, "function": "check", "kwargs": {"need": ["a", "b"]}}}
+        res, model = self.run_pi([
+            ("web_search", {"query": "q1"}),
+            ("web_search", {"query": "q2"}),
+            ("submit_forecast", {"forecasts": [{"k": "a", "probability": 0.1}, {"k": "b", "probability": 0.2}],
+                                 "rationale": "r"}),
+            ("submit_debrief", {"a": "why a"}),
+            ("submit_debrief", {"b": "why b"}),
+            "done",
+        ], debrief=debrief)
+        self.assertEqual(res["rc"], 0, open(os.path.join(res["workdir"], "stderr.txt")).read())
+        self.assertNotIn("submit_debrief", model.tools(1))
+        self.assertEqual(model.tools(4), {"submit_debrief"})
+        self.assertEqual(model.last_user(4), "Debrief now.")
+        self.assertIn("b: missing", model.tool_result(5))
+        self.assertIn("fixing: b: missing", model.last_user(5))
+        self.assertEqual(res["debrief"], {"result": {"a": "why a", "b": "why b"}, "complete": True,
+                                          "attempts": 2, "problems": [], "error": None})
 
 
 if __name__ == "__main__":

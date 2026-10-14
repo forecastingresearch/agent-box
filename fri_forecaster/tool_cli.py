@@ -2,7 +2,12 @@
 """The research tools as a one-shot CLI for the pi extension (pi_tools.ts):
 `tool_cli.py web_search '{"query": ...}'` prints the JSON fri_forecaster.tools
 returns. One implementation for every harness, so comparisons are of loops,
-not search stacks. Keys come from the environment the harness passes down."""
+not search stacks. Keys come from the environment the harness passes down.
+
+`tool_cli.py validate` (arguments on stdin: {file, function, kwargs, value})
+runs a caller's debrief validator, `function(value, **kwargs)` from the
+Python file `file`, and prints {"problems": [...]}."""
+import importlib.util
 import json
 import os
 import random
@@ -35,7 +40,17 @@ def call(fn, args, sleep=time.sleep):
     return res
 
 
+def validate(file, function, value, kwargs=None):
+    spec = importlib.util.spec_from_file_location("forecaster_validator", file)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return {"problems": [str(p) for p in (getattr(module, function)(value, **(kwargs or {})) or [])]}
+
+
 def main():
+    if sys.argv[1] == "validate":
+        print(json.dumps(validate(**json.load(sys.stdin))))
+        return
     load_keys()
     tool, args = sys.argv[1], json.loads(sys.argv[2] if len(sys.argv) > 2 else "{}")
     if tool not in FN:
