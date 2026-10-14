@@ -1,0 +1,30 @@
+# Unit tests (fake pi) and pi_tools.ts through the pinned pi with a scripted
+# model: no network beyond installing, no API keys, no spend.
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.13"]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22.19"     # pi 0.99.2's engines floor
+          cache: npm
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python-version }}
+      - run: npm ci
+      - run: pip install -e '.[dev]'
+      - run: python -m pytest -q -rs

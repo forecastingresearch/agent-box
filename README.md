@@ -170,5 +170,10 @@ ForecastBench, from picking models by ECI to the forecast sets you upload:
 ## Test
 
 ```sh
-python -m pytest -q        # against a fake pi: no network, no spend
+python -m pytest -q        # no network, no spend
 ```
+
+The harness and driver tests use a fake pi. `tests/test_pi_tools.py` runs the real pi
+(`npm ci` first; skipped without it) against a scripted model on a local server, so
+`pi_tools.ts` is tested as pi loads it: the research floor, pieces, the final answer.
+CI runs both on every push and pull request.
