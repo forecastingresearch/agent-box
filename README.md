@@ -1,5 +1,7 @@
 # agent-box
 
+> **Moved, 2026-10-19.** This code now lives in the AIRO repository, [forecastingresearch/airo](https://github.com/forecastingresearch/airo), under `packages/fri-forecaster`, with its history (airo PR #12). This repository is archived; install from there: `pip install 'fri-forecaster @ git+https://github.com/forecastingresearch/airo#subdirectory=packages/fri-forecaster'`. The `w13-leap` branch (the LEAP panel work) has not been moved yet.
+
 Agentic forecasting jobs for FRI. Today this is the FRI Forecaster package
 (`fri_forecaster`); the job queue it is growing into is specced in issue #1.
 
