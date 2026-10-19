@@ -190,6 +190,22 @@ class PiToolsTest(PiCase):
         offered = {t["function"]["name"] for t in model.requests[0]["tools"]}
         self.assertEqual(offered, {"submit_forecast"})      # no research tools, and none of pi's built-ins
         self.assertEqual({k: c["probability"] for k, c in res["cells"].items()}, {"a": 0.4, "b": 0.6})
+        self.assertEqual(model.last_user(1), "P")           # the prompt, from stdin, as the first user message
+
+    def test_a_prompt_past_the_argv_limit_reaches_the_model(self):
+        """The prompt goes on stdin: Linux hands one argument at most 128 KiB,
+        and AIRO's joint prompt is past that (2026-10-19)."""
+        prompt = "Forecast.\n" + "".join(f"--- question {i} ---\nWill it happen?\n" for i in range(6000))
+        self.assertGreater(len(prompt.encode()), 131072)
+        res, model = self.run_pi([
+            ("submit_forecast", {"forecasts": [{"k": "a", "probability": 0.4}, {"k": "b", "probability": 0.6}],
+                                 "rationale": "r"}),
+            "done",
+        ], prompt=prompt, research_tools=(), min_research=0, cells_tool=False,
+           tool_descriptions={"submit_forecast": "f"})
+        self.assertEqual(res["rc"], 0, open(os.path.join(res["workdir"], "stderr.txt")).read())
+        self.assertEqual(model.last_user(1), prompt.strip())   # verbatim but for pi's trim
+        self.assertEqual(open(os.path.join(res["workdir"], "prompt.txt")).read(), prompt)
 
 
 SEARCH_WITH_CAUSE = {"type": "object", "required": ["query", "cause"],

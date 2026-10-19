@@ -15,6 +15,7 @@ FAKE_PI = textwrap.dedent("""\
     #!{py}
     import json, os, sys
     out = os.environ["FORECASTER_OUT"]
+    open(os.path.join(out, "stdin.txt"), "w").write(sys.stdin.read())   # the prompt, as pi would read it
     spec = json.load(open(os.path.join(out, "spec.json")))
     keys = spec["allowed_keys"]
     field = spec["key_fields"][0]
@@ -54,6 +55,7 @@ class HarnessTest(unittest.TestCase):
                               cell_schema=SCHEMA, key_fields=["k"], allowed_keys=["a", "b", "c"],
                               tool_descriptions=DESC, pi=fake_pi(d))
             self.assertEqual(res["rc"], 0)
+            self.assertEqual(open(os.path.join(res["workdir"], "stdin.txt")).read(), "P")   # the prompt, on stdin
             self.assertEqual(res["cells"]["a"]["probability"], 0.1)   # from a piece
             self.assertEqual(res["cells"]["c"]["probability"], 0.3)   # from the final
             self.assertNotIn("bogus", res["cells"])                   # pieces filtered to allowed keys
@@ -98,12 +100,15 @@ class HarnessTest(unittest.TestCase):
             self.assertEqual(spec["research_tools"], [])
 
     def test_command_loads_extension_without_builtins(self):
-        cmd = harness.pi_command("m/x", "S", "P", thinking="max", pi="pi")
+        cmd = harness.pi_command("m/x", "S", thinking="max", pi="pi")
         for flag in ("--no-builtin-tools", "--no-extensions", "--no-skills", "--no-prompt-templates", "--no-context-files"):
             self.assertIn(flag, cmd)
-        self.assertEqual(harness.pi_command("m/x", "S", "P", pi="/x/cli.js")[:2], ["node", "/x/cli.js"])
+        self.assertEqual(harness.pi_command("m/x", "S", pi="/x/cli.js")[:2], ["node", "/x/cli.js"])
         self.assertEqual(cmd[cmd.index("-e") + 1], harness.EXT)
         self.assertTrue(os.path.exists(harness.EXT))
+        # No positional message: the prompt goes on stdin (harness.PROMPT_ON_STDIN).
+        self.assertEqual(cmd[-2:], ["--system-prompt", "S"])
+        self.assertTrue(harness.PROMPT_ON_STDIN)
 
 
 QSET = {"forecast_due_date": "2026-10-11", "question_set": "2026-10-11-llm.json", "questions": [

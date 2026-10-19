@@ -86,9 +86,19 @@ def pi_version(pi=DEFAULT_PI):
         return None
 
 
-def pi_command(model, system, prompt, *, thinking="high", pi=DEFAULT_PI):
+# The prompt goes to pi on STDIN, never as an argument. Linux hands one
+# argument at most 128 KiB (MAX_ARG_STRLEN), and AIRO's joint prompt passed
+# that on 2026-10-19; pi reads piped stdin as its first prompt, verbatim but
+# for surrounding whitespace (it trims), so what the model reads and prompt.txt
+# differ by at most a trailing newline. Callers can check this flag before
+# sending a prompt that would not fit an argument. (The same cap is why a
+# debrief validator's value reaches tool_cli on stdin: pi_tools.ts.)
+PROMPT_ON_STDIN = True
+
+
+def pi_command(model, system, *, thinking="high", pi=DEFAULT_PI):
     return pi_argv(pi) + ["-p", "--mode", "json", *ISOLATION, "-e", EXT,
-                          "--model", model, "--thinking", thinking, "--system-prompt", system, prompt]
+                          "--model", model, "--thinking", thinking, "--system-prompt", system]
 
 
 def new_attempt_dir(workdir):
@@ -176,13 +186,14 @@ def run(*, model, system, prompt, workdir, cell_schema, key_fields, allowed_keys
                tool_parameters=tool_parameters, **loop)
     open(os.path.join(workdir, "prompt.txt"), "w").write(prompt)
     open(os.path.join(workdir, "system.txt"), "w").write(system)
-    cmd = pi_command(model, system, prompt, thinking=thinking, pi=pi)
+    cmd = pi_command(model, system, thinking=thinking, pi=pi)
     full_env = dict(os.environ, **(env or {}), FORECASTER_OUT=workdir, FORECASTER_PY=sys.executable)
     t0 = datetime.now(timezone.utc)
     events_path = os.path.join(workdir, "events.jsonl")
     with open(events_path, "w") as ev, open(os.path.join(workdir, "stderr.txt"), "w") as err:
         try:
-            rc = subprocess.run(cmd, stdout=ev, stderr=err, env=full_env, cwd=cwd, timeout=timeout).returncode
+            rc = subprocess.run(cmd, input=prompt.encode(), stdout=ev, stderr=err, env=full_env, cwd=cwd,
+                                timeout=timeout).returncode
         except subprocess.TimeoutExpired:
             rc = "timeout"
     secs = (datetime.now(timezone.utc) - t0).total_seconds()

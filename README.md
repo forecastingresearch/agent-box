@@ -91,7 +91,9 @@ Value on 2026-10-09: 671.2 (SPY's market close on 2026-10-09.)
 Give one forecast for EACH of these resolution dates (the probability the question resolves Yes when evaluated on that date): 2026-10-18, 2026-11-10
 ```
 
-`system.txt` begins *"You are a careful, calibrated forecaster…"*. `spec.json` says which
+The harness hands pi the prompt on stdin, never as an argument (Linux allows one at most
+128 KiB, and AIRO's joint prompt is past that); pi reads it as its first message, trimmed
+of surrounding whitespace. `system.txt` begins *"You are a careful, calibrated forecaster…"*. `spec.json` says which
 tools pi gets, how much research comes first, and what an answer looks like:
 
 ```json
